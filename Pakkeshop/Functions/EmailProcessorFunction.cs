@@ -24,7 +24,7 @@ public class EmailProcessorFunction
     }
 
     [Function("EmailProcessor")]
-    public async Task Run([TimerTrigger("0 0 */1 * * *", RunOnStartup=true)] TimerInfo myTimer)
+    public async Task Run([TimerTrigger("0 */15 * * * *", RunOnStartup=true)] TimerInfo myTimer)
     {
         _logger.LogInformation("Email processor started at: {Time}", DateTime.UtcNow);
 
@@ -83,10 +83,14 @@ public class EmailProcessorFunction
                         _logger.LogWarning("Failed to extract package data from email {UniqueId}", email.UniqueId);
 
                         // Send error email
-                        await SendErrorEmailAsync(senderEmail,
+                        await SendErrorEmailAsync(senderEmail, email.Subject,
                             "Kunne ikke udtrække pakkedata fra din email. " +
                             "Kontroller venligst at emailen indeholder alle nødvendige oplysninger: " +
                             "pakkenummer, distributør (DAO/GLS/PostNord/Bring), og evt. pickup code og sidste afhentningsdag.");
+
+                        // Delete email to prevent reprocessing
+                        await _emailService.DeleteEmailAsync(email.UniqueId);
+                        _logger.LogInformation("Deleted failed email {UniqueId}", email.UniqueId);
                     }
                 }
                 catch (Exception ex)
@@ -96,11 +100,22 @@ public class EmailProcessorFunction
                         email.UniqueId, ex.Message);
 
                     // Send detailed error email
-                    await SendErrorEmailAsync(senderEmail,
+                    await SendErrorEmailAsync(senderEmail, email.Subject,
                         $"Der opstod en fejl ved behandling af din email:\n\n" +
                         $"Fejltype: {ex.GetType().Name}\n" +
                         $"Fejlbesked: {ex.Message}\n\n" +
                         $"Prøv venligst igen, eller kontakt support hvis problemet fortsætter.");
+
+                    // Delete email to prevent reprocessing
+                    try
+                    {
+                        await _emailService.DeleteEmailAsync(email.UniqueId);
+                        _logger.LogInformation("Deleted failed email {UniqueId}", email.UniqueId);
+                    }
+                    catch (Exception deleteEx)
+                    {
+                        _logger.LogError(deleteEx, "Failed to delete email {UniqueId}", email.UniqueId);
+                    }
                 }
             }
 
@@ -119,14 +134,16 @@ public class EmailProcessorFunction
         }
     }
 
-    private async Task SendErrorEmailAsync(string toAddress, string errorMessage)
+    private async Task SendErrorEmailAsync(string toAddress, string originalSubject, string errorMessage)
     {
         try
         {
+            var fullMessage = $"Din email med emnet '{originalSubject}' kunne ikke behandles.\n\n{errorMessage}";
+
             await _emailService.SendEmailAsync(
                 toAddress,
                 "Fejl ved behandling af din pakke-email",
-                errorMessage);
+                fullMessage);
             _logger.LogInformation("Sent error email to {Sender}", toAddress);
         }
         catch (Exception ex)
