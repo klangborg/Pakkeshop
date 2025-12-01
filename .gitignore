@@ -361,3 +361,11 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Claude Code settings and documentation
+.claude/
+CLAUDE.md
+
+# Deployment artifacts
+deploy.zip
+azure-settings.json
