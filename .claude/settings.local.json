@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir /s \"C:\\Users\\ktlh.CPH-PW0CB3Y\\source\\repos\\Pakkeshop\\Pakkeshop\" /B)",
+      "Bash(cat:*)",
+      "Bash(dotnet publish:*)",
+      "Bash(func azure functionapp publish Pakkeshop)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
