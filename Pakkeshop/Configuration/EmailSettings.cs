@@ -11,4 +11,6 @@ public class EmailSettings
     public string FromAddress { get; set; } = string.Empty;
     public string FromName { get; set; } = string.Empty;
     public bool UseSsl { get; set; }
+    public string? NotificationEmail { get; set; }
+    public string? ExcludedSenders { get; set; }
 }

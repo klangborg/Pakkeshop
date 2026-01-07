@@ -1,5 +1,7 @@
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Pakkeshop.Configuration;
 using Pakkeshop.Services;
 
 namespace Pakkeshop.Functions;
@@ -10,17 +12,23 @@ public class EmailProcessorFunction
     private readonly IEmailService _emailService;
     private readonly IOpenAIService _openAIService;
     private readonly IGoogleSheetsService _sheetsService;
+    private readonly ISeasonalMessageService _seasonalMessageService;
+    private readonly EmailSettings _emailSettings;
 
     public EmailProcessorFunction(
         ILogger<EmailProcessorFunction> logger,
         IEmailService emailService,
         IOpenAIService openAIService,
-        IGoogleSheetsService sheetsService)
+        IGoogleSheetsService sheetsService,
+        ISeasonalMessageService seasonalMessageService,
+        IOptions<EmailSettings> emailSettings)
     {
         _logger = logger;
         _emailService = emailService;
         _openAIService = openAIService;
         _sheetsService = sheetsService;
+        _seasonalMessageService = seasonalMessageService;
+        _emailSettings = emailSettings.Value;
     }
 
     [Function("EmailProcessor")]
@@ -57,19 +65,53 @@ public class EmailProcessorFunction
                     {
                         await _sheetsService.AppendRowAsync(packageData);
 
-                        // Send success email with elf message
+                        // Send success email with seasonal message
                         try
                         {
                             var elfMessage = await _openAIService.GenerateElfResponseAsync(packageData);
                             await _emailService.SendEmailAsync(
                                 senderEmail,
-                                "Din pakke er registreret! 🎅",
+                                _seasonalMessageService.GetEmailSubject(),
                                 elfMessage);
                             _logger.LogInformation("Sent success email to {Sender}", senderEmail);
                         }
                         catch (Exception emailEx)
                         {
                             _logger.LogWarning(emailEx, "Failed to send success email to {Sender}", senderEmail);
+                        }
+
+                        // Send notification email if configured and sender not excluded
+                        try
+                        {
+                            if (!string.IsNullOrWhiteSpace(_emailSettings.NotificationEmail) &&
+                                !IsSenderExcluded(senderEmail, _emailSettings.ExcludedSenders))
+                            {
+                                var notificationMessage = await _openAIService.GenerateNotificationMessageAsync(
+                                    packageData,
+                                    senderEmail);
+
+                                await _emailService.SendEmailAsync(
+                                    _emailSettings.NotificationEmail,
+                                    $"Ny pakke registreret {_seasonalMessageService.GetCharacterEmoji()}",
+                                    notificationMessage);
+
+                                _logger.LogInformation(
+                                    "Sent notification email to {NotificationEmail} for package from {Sender}",
+                                    _emailSettings.NotificationEmail, senderEmail);
+                            }
+                            else if (!string.IsNullOrWhiteSpace(_emailSettings.NotificationEmail))
+                            {
+                                _logger.LogInformation(
+                                    "Skipping notification email - sender {Sender} is in excluded list",
+                                    senderEmail);
+                            }
+                        }
+                        catch (Exception notificationEx)
+                        {
+                            // Don't fail the entire process if notification fails
+                            _logger.LogWarning(notificationEx,
+                                "Failed to send notification email to {NotificationEmail}",
+                                _emailSettings.NotificationEmail);
                         }
 
                         await _emailService.DeleteEmailAsync(email.UniqueId);
@@ -151,6 +193,20 @@ public class EmailProcessorFunction
             _logger.LogError(ex, "Failed to send error email to {Sender}: {Message}",
                 toAddress, ex.Message);
         }
+    }
+
+    private bool IsSenderExcluded(string senderEmail, string? excludedSenders)
+    {
+        if (string.IsNullOrWhiteSpace(excludedSenders))
+            return false;
+
+        var excludedList = excludedSenders
+            .Split(';', StringSplitOptions.RemoveEmptyEntries)
+            .Select(e => e.Trim())
+            .Where(e => !string.IsNullOrWhiteSpace(e));
+
+        return excludedList.Any(excluded =>
+            excluded.Equals(senderEmail, StringComparison.OrdinalIgnoreCase));
     }
 
     private static string ExtractEmailAddress(string fromField)

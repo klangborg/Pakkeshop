@@ -19,6 +19,7 @@ builder.Services.Configure<OpenAISettings>(builder.Configuration.GetSection("Ope
 builder.Services.Configure<GoogleSheetsSettings>(builder.Configuration.GetSection("GoogleSheets"));
 
 // Register services
+builder.Services.AddSingleton<ISeasonalMessageService, SeasonalMessageService>();
 builder.Services.AddScoped<IEmailService, ImapEmailService>();
 builder.Services.AddScoped<IOpenAIService, OpenAIService>();
 builder.Services.AddScoped<IGoogleSheetsService, GoogleSheetsService>();

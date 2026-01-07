@@ -14,12 +14,14 @@ public class OpenAIService : IOpenAIService
     private readonly OpenAISettings _settings;
     private readonly ILogger<OpenAIService> _logger;
     private readonly AzureOpenAIClient _client;
+    private readonly ISeasonalMessageService _seasonalMessageService;
 
-    public OpenAIService(IOptions<OpenAISettings> settings, ILogger<OpenAIService> logger)
+    public OpenAIService(IOptions<OpenAISettings> settings, ILogger<OpenAIService> logger, ISeasonalMessageService seasonalMessageService)
     {
         _settings = settings.Value;
         _logger = logger;
         _client = new AzureOpenAIClient(new Uri(_settings.Endpoint), new AzureKeyCredential(_settings.ApiKey));
+        _seasonalMessageService = seasonalMessageService;
     }
 
     public async Task<PackageData?> ExtractPackageDataAsync(string emailContent)
@@ -87,12 +89,7 @@ public class OpenAIService : IOpenAIService
 
             var messages = new List<ChatMessage>
             {
-                new SystemChatMessage(
-                    "Du er en hjælpsom julenisse der arbejder med at holde styr på pakker. " +
-                    "Skriv en kort, venlig og personlig besked (2-4 sætninger) der bekræfter at pakken er tilføjet til listen, " +
-                    "så modtageren har overblik over de pakker der kan hentes. " +
-                    "Brug et muntert og hyggeligt tone. Inkluder de vigtigste oplysninger om pakken. " +
-                    "Underskrive med en hyggelig nissehilsen."),
+                new SystemChatMessage(_seasonalMessageService.GetSystemPrompt()),
                 new UserChatMessage(
                     $"Jeg har netop tilføjet denne pakke til listen:\n" +
                     $"Pakkenummer: {packageData.Pakkenummer}\n" +
@@ -112,7 +109,55 @@ public class OpenAIService : IOpenAIService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error generating elf response: {Message}", ex.Message);
-            return "Din pakke er blevet registreret! Ho ho ho! 🎅";
+            return _seasonalMessageService.GetFallbackMessage();
+        }
+    }
+
+    public async Task<string> GenerateNotificationMessageAsync(PackageData packageData, string senderEmail)
+    {
+        try
+        {
+            var chatClient = _client.GetChatClient(_settings.DeploymentName);
+
+            var pickupInfo = !string.IsNullOrEmpty(packageData.PickupCode)
+                ? $"Pickup code: {packageData.PickupCode}"
+                : "Ingen pickup code";
+
+            var lastPickupInfo = !string.IsNullOrEmpty(packageData.SidsteAfhentningsDag)
+                ? $"Sidste afhentningsdag: {packageData.SidsteAfhentningsDag}"
+                : "Ingen sidste afhentningsdag angivet";
+
+            var pakkeshopInfo = !string.IsNullOrEmpty(packageData.Pakkeshop)
+                ? $"Pakkeshop: {packageData.Pakkeshop}"
+                : "Ingen pakkeshop adresse";
+
+            var messages = new List<ChatMessage>
+            {
+                new SystemChatMessage(_seasonalMessageService.GetSystemPrompt()),
+                new UserChatMessage(
+                    $"Nogen anden (email: {senderEmail}) har registreret en ny pakke i systemet:\n" +
+                    $"Pakkenummer: {packageData.Pakkenummer}\n" +
+                    $"Distributør: {packageData.Distributør}\n" +
+                    $"{pickupInfo}\n" +
+                    $"{lastPickupInfo}\n" +
+                    $"{pakkeshopInfo}\n\n" +
+                    "Skriv en kort besked der fortæller at en ny pakke er blevet tilføjet af en anden person. " +
+                    "Inkluder hvem der registrerede den, og de vigtigste oplysninger om pakken.")
+            };
+
+            var response = await chatClient.CompleteChatAsync(messages);
+            var notificationMessage = response.Value.Content[0].Text;
+
+            _logger.LogInformation("Generated notification message for package {Pakkenummer}", packageData.Pakkenummer);
+            return notificationMessage;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error generating notification message: {Message}", ex.Message);
+            return $"{_seasonalMessageService.GetFallbackMessage()}\n\n" +
+                   $"En ny pakke er blevet registreret af {senderEmail}:\n" +
+                   $"Pakkenummer: {packageData.Pakkenummer}\n" +
+                   $"Distributør: {packageData.Distributør}";
         }
     }
 }
