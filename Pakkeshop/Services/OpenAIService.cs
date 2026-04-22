@@ -37,7 +37,11 @@ public class OpenAIService : IOpenAIService
                     "Returner KUN valid JSON med følgende struktur: " +
                     "{\"pakkenummer\": \"string\", \"distributør\": \"string (dao/gls/postnord/bring)\", " +
                     "\"pickupCode\": \"string eller null\", \"sidsteAfhentningsDag\": \"ISO date eller null\", " +
-                    "\"pakkeshop\": \"string med fuld adresse til pakkeshop eller null\"}. " +
+                    "\"pakkeshop\": \"string med fuld adresse til pakkeshop eller null\", " +
+                    "\"postnordHentekodeUrl\": \"string eller null\"}. " +
+                    "Hvis PostNord skriver at hentekoden vises via et link (fx https://l.postnord.com/...), og koden ikke står direkte i mailen, " +
+                    "sæt pickupCode til null og sæt postnordHentekodeUrl til den fulde https-URL til l.postnord.com. " +
+                    "Hvis hentekoden står i mailen, skal postnordHentekodeUrl være null. " +
                     "Hvis du ikke kan finde alle oplysninger, sæt de manglende felter til null eller tom string."),
                 new UserChatMessage($"Udtræk pakkedata fra denne email:\n\n{emailContent}")
             };
@@ -47,15 +51,48 @@ public class OpenAIService : IOpenAIService
             var content = response.Value.Content[0].Text;
             _logger.LogInformation("OpenAI response: {Response}", content);
 
-            var packageData = JsonSerializer.Deserialize<PackageData>(content, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true
-            });
+            var jsonSlice = TryExtractJsonObject(content) ?? content.Trim();
 
-            if (packageData != null && !string.IsNullOrEmpty(packageData.Pakkenummer))
+            var jsonOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            PackageData? packageData = null;
+            try
             {
+                packageData = JsonSerializer.Deserialize<PackageData>(jsonSlice, jsonOptions);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogWarning(ex, "Kunne ikke deserialisere pakkedata-JSON fra model");
+            }
+
+            var linkFromBody = PostNordLinkMatcher.FirstMatch(emailContent);
+
+            if (packageData is null && linkFromBody is not null)
+            {
+                packageData = new PackageData
+                {
+                    Distributør = "postnord",
+                    PostnordHentekodeUrl = linkFromBody
+                };
+            }
+
+            if (packageData is not null
+                && string.IsNullOrWhiteSpace(packageData.PostnordHentekodeUrl)
+                && linkFromBody is not null)
+                packageData.PostnordHentekodeUrl = linkFromBody;
+
+            var hasPostnordLink = !string.IsNullOrWhiteSpace(packageData?.PostnordHentekodeUrl)
+                                  || linkFromBody is not null;
+            var hasPakkenummer = !string.IsNullOrEmpty(packageData?.Pakkenummer);
+            var extractionOk = packageData is not null && (hasPakkenummer || hasPostnordLink);
+
+            if (extractionOk)
+            {
+                if (string.IsNullOrWhiteSpace(packageData!.Distributør) && hasPostnordLink)
+                    packageData.Distributør = "postnord";
+
                 _logger.LogInformation("Successfully extracted package data: {Pakkenummer} from {Distributør}",
-                    packageData.Pakkenummer, packageData.Distributør);
+                    string.IsNullOrEmpty(packageData.Pakkenummer) ? "(udfyldes via PostNord-link)" : packageData.Pakkenummer,
+                    packageData.Distributør);
                 return packageData;
             }
 
@@ -159,5 +196,14 @@ public class OpenAIService : IOpenAIService
                    $"Pakkenummer: {packageData.Pakkenummer}\n" +
                    $"Distributør: {packageData.Distributør}";
         }
+    }
+
+    private static string? TryExtractJsonObject(string text)
+    {
+        var i = text.IndexOf('{');
+        var j = text.LastIndexOf('}');
+        if (i < 0 || j <= i)
+            return null;
+        return text.Substring(i, j - i + 1);
     }
 }

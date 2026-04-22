@@ -13,6 +13,7 @@ public class EmailProcessorFunction
     private readonly IOpenAIService _openAIService;
     private readonly IGoogleSheetsService _sheetsService;
     private readonly ISeasonalMessageService _seasonalMessageService;
+    private readonly IPostNordPickupLinkService _postNordPickupLinkService;
     private readonly EmailSettings _emailSettings;
 
     public EmailProcessorFunction(
@@ -21,6 +22,7 @@ public class EmailProcessorFunction
         IOpenAIService openAIService,
         IGoogleSheetsService sheetsService,
         ISeasonalMessageService seasonalMessageService,
+        IPostNordPickupLinkService postNordPickupLinkService,
         IOptions<EmailSettings> emailSettings)
     {
         _logger = logger;
@@ -28,6 +30,7 @@ public class EmailProcessorFunction
         _openAIService = openAIService;
         _sheetsService = sheetsService;
         _seasonalMessageService = seasonalMessageService;
+        _postNordPickupLinkService = postNordPickupLinkService;
         _emailSettings = emailSettings.Value;
     }
 
@@ -60,6 +63,32 @@ public class EmailProcessorFunction
                         email.From, email.Subject);
 
                     var packageData = await _openAIService.ExtractPackageDataAsync(email.Body);
+
+                    string? postnordResolveError = null;
+                    if (packageData != null)
+                    {
+                        var postnordUrl = packageData.PostnordHentekodeUrl ?? PostNordLinkMatcher.FirstMatch(email.Body);
+                        if (!string.IsNullOrWhiteSpace(postnordUrl))
+                        {
+                            var resolved = await _postNordPickupLinkService.ResolveFromShortLinkAsync(postnordUrl);
+                            if (resolved != null)
+                            {
+                                packageData.Pakkenummer = resolved.ShipmentId;
+                                packageData.PickupCode = resolved.PickupCode;
+                            }
+                            else
+                            {
+                                _logger.LogWarning("Kunne ikke hente PostNord-data fra link for email {UniqueId}", email.UniqueId);
+                                packageData = null;
+                                postnordResolveError =
+                                    "Kunne ikke hente hentekode fra PostNord-linket (linket kan være udløbet eller ugyldigt). " +
+                                    "Prøv med et nyt link fra PostNord, eller send pakkenummer og hentekode direkte i mailen.";
+                            }
+                        }
+
+                        if (packageData != null)
+                            packageData.PostnordHentekodeUrl = null;
+                    }
 
                     if (packageData != null)
                     {
@@ -126,6 +155,7 @@ public class EmailProcessorFunction
 
                         // Send error email
                         await SendErrorEmailAsync(senderEmail, email.Subject,
+                            postnordResolveError ??
                             "Kunne ikke udtrække pakkedata fra din email. " +
                             "Kontroller venligst at emailen indeholder alle nødvendige oplysninger: " +
                             "pakkenummer, distributør (DAO/GLS/PostNord/Bring), og evt. pickup code og sidste afhentningsdag.");

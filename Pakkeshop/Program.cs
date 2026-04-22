@@ -23,5 +23,12 @@ builder.Services.AddSingleton<ISeasonalMessageService, SeasonalMessageService>()
 builder.Services.AddScoped<IEmailService, ImapEmailService>();
 builder.Services.AddScoped<IOpenAIService, OpenAIService>();
 builder.Services.AddScoped<IGoogleSheetsService, GoogleSheetsService>();
+builder.Services.AddHttpClient<IPostNordPickupLinkService, PostNordPickupLinkService>(client =>
+    {
+        client.Timeout = TimeSpan.FromSeconds(25);
+        client.DefaultRequestHeaders.UserAgent.ParseAdd(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    })
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
 
 builder.Build().Run();
